@@ -1,0 +1,314 @@
+Short answer: you can do something like this, but not exactly the way you’ve described without data-risk. A standby can’t be your “green DB” for write traffic until it’s promoted, and once you promote it, it stops following the old primary and you now have two diverging clusters.
+
+Let me walk through:
+
+
+---
+
+1. What you’re proposing (in my words)
+
+EFM cluster: 4 nodes
+
+1 primary
+
+3 standbys
+
+
+
+Your idea:
+
+1. Take one standby out of the EFM cluster.
+
+
+2. On that standby, deploy latest DB release (schema changes).
+
+
+3. Let business do PVT on it.
+
+
+4. If PVT is OK:
+
+Route customer traffic to this node.
+
+Make it the new primary (join back into EFM as primary).
+
+
+
+
+You’re thinking of this standby as a “green” DB.
+
+
+---
+
+2. The core technical problem
+
+A standby in PostgreSQL:
+
+Is in recovery mode, applying WAL from primary.
+
+Cannot accept writes or DDL while it’s a standby.
+
+
+To run PVT with schema changes and writes:
+
+You must promote the standby (pg_ctl promote).
+
+
+Once you promote it:
+
+It stops receiving WAL from the old primary.
+
+It becomes an independent primary.
+
+Any changes on old primary are no longer replicated to this node.
+
+
+So you now have:
+
+Old cluster: primary A + standbys (Blue)
+
+New cluster: promoted “standby” B (Green)
+
+
+These two DBs will diverge as soon as both receive different writes.
+
+That’s the big catch.
+
+
+---
+
+3. Two realistic patterns based on what you want
+
+I’ll give you two concrete options:
+
+Option 1 – Use the standby as a PVT clone only (safer, recommended)
+
+Here the standby is used for testing only, not for live cutover.
+
+Flow:
+
+1. Take one standby out of EFM, stop recovery:
+
+Promote it so it becomes a standalone test DB with a recent snapshot of prod data.
+
+
+
+2. Deploy new schema + app on this PVT DB.
+
+
+3. Business does PVT:
+
+Functional tests
+
+Report validation
+
+Performance sampling
+
+
+
+
+> This DB is now ONLY for testing. It will never be used as the live primary again.
+
+
+
+4. Once PVT passes:
+
+You apply the same backward-compatible schema changes on the real prod primary (under EFM).
+
+Then do Blue-Green at the application layer:
+
+Blue app → Green app, both pointing to the same prod DB.
+
+
+
+
+
+Pros:
+
+No crazy data sync issues.
+
+EFM cluster stays clean: 1 primary + N standbys.
+
+PVT has realistic data (snapshot of production).
+
+
+Cons:
+
+That standby is dedicated to PVT for some time (but you can re-clone it back later).
+
+No “database Blue-Green”; it’s app-level Blue-Green + PVT clone.
+
+
+This is what I would strongly recommend in your environment, given you can’t use logical replication.
+
+
+---
+
+Option 2 – Use the standby as your future primary (DB Blue-Green)
+
+If you really want that promoted standby to become the new primary serving production, you must treat this as a cluster cutover, not a simple “take out and join back”.
+
+High-level flow with 4-node cluster (P + S1, S2, S3):
+
+1. Pick S3 as future Green primary.
+
+
+2. Ensure S3 is fully in sync with current primary P.
+
+
+3. Stop / freeze writes on old primary:
+
+Put app into read-only or shut down writers.
+
+Wait a few seconds for WAL to fully replicate to S3.
+
+
+
+4. Detach S3 from EFM & promote it:
+
+Remove/disable S3 in EFM config or mark no failover.
+
+pg_ctl promote on S3 → now it’s Green primary.
+
+
+
+5. Deploy schema/application release on S3:
+
+Run migrations.
+
+Start Green app pointing to S3.
+
+PVT by business on S3.
+
+
+> At this moment, old primary P is “frozen” or stopped from receiving writes (otherwise data diverges).
+If you unfreeze P and allow writes, data between P and S3 will diverge, and you cannot cleanly “join back”.
+
+
+
+
+6. If business approves:
+
+Decide S3 is the new production primary.
+
+Route all customer traffic to S3 (update VIP/DNS/LB).
+
+Build new standbys for S3:
+
+Re-clone P, S1, S2 from S3 as standbys.
+
+Join them to EFM as standbys in the new cluster.
+
+
+
+
+7. Turn old primary P into a standby or decommission it after validation.
+
+
+
+Where’s the downtime?
+
+You must freeze writes to old primary while:
+
+S3 is catching up with WAL,
+
+S3 is promoted,
+
+and until you firmly decide cutover.
+
+
+
+Even if that’s only a couple of minutes, that’s not “pure” zero downtime; it’s a short read-only window.
+
+If you do NOT freeze writes on old primary:
+
+P gets new transactions that S3 never sees.
+
+After promotion, those rows are missing on S3.
+
+Re-synchronizing that safely can become a nightmare.
+
+
+
+---
+
+4. Where EFM helps in this pattern
+
+EFM can:
+
+Manage failover and VIP within a cluster (once S3 becomes the new primary and you add its standbys).
+
+Help automate planned switchover within a single cluster.
+
+
+But EFM does not magically sync two diverged primaries. The moment you promote a standby to independent primary, that’s a cluster split. From there, you’re in full migration territory.
+
+So your proposed “take out standby → do PVT → route customers → join back as primary” is:
+
+✅ Possible only if you treat it as a full new primary cluster.
+
+❌ Not possible as a simple “temporary test node” that you plug back into the same EFM cluster without recloning others.
+
+
+
+---
+
+5. My recommendation for you
+
+Given:
+
+You cannot use logical replication.
+
+App itself does peer replication.
+
+You want minimal risk and near-zero downtime.
+
+
+I’d recommend:
+
+1. Use one standby as a PVT clone (Option 1):
+
+Clone from primary → promote → PVT with business.
+
+
+
+2. After sign-off:
+
+Apply expand → migrate → contract schema strategy on the real prod cluster under EFM.
+
+Do Blue-Green at the application layer only.
+
+
+
+3. Let EFM handle:
+
+Node-level failover,
+
+VIP,
+
+HA inside the DB cluster.
+
+
+
+
+You’ll still achieve:
+
+Zero-downtime releases (app Blue-Green + backward-compatible DB changes).
+
+HA in DB via EFM.
+
+Safe PVT on realistic data.
+
+
+
+---
+
+If you want, I can next:
+
+Draw a step-by-step runbook for Option 1 tailored to your 4-node EFM cluster:
+
+exact commands/checks to detach a standby for PVT,
+
+how to re-clone it back into EFM after PVT,
+
+and how to structure the DB migration scripts for these releases.

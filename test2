@@ -1,0 +1,338 @@
+Okay, let’s lock this down into a clear, practical pattern for you:
+
+> Goal: Blue–Green-style deployments on PostgreSQL 14 with EFM,
+without breaking app-level replication or causing DB downtime.
+
+
+
+Because you can’t use logical replication and your application itself does replication, the safest “best way” is:
+
+> ✅ Blue–Green at the application layer
+✅ Single EFM-managed Postgres cluster as source of truth
+✅ Online, backward-compatible DB changes (expand → migrate → contract)
+✅ Use a standby clone only for PVT, not for production cutover
+
+
+
+I’ll lay it out step by step.
+
+
+---
+
+1. Target Architecture
+
+Database (EFM cluster – single source of truth)
+
+PostgreSQL 14
+
+EFM cluster with, say:
+
+db-primary
+
+db-standby1, db-standby2, db-standby3
+
+
+EFM handles:
+
+Node monitoring
+
+Automatic failover (promote standby on primary failure)
+
+VIP / HAProxy script to always point db.prod.internal:5432 to the current primary
+
+
+
+Important:
+There is only one logical production database. No second independent production DB.
+
+Application (Blue–Green)
+
+Blue App = current live version
+
+Green App = new version to be rolled out
+
+Both are capable of connecting to the same DB endpoint: db.prod.internal
+
+Load balancer / ingress controls:
+
+Traffic % to Blue
+
+Traffic % to Green
+
+
+
+This is where your Blue–Green switch actually happens.
+
+
+---
+
+2. DB Change Strategy (Critical for Zero Impact)
+
+Use the classic expand → backfill → contract pattern so both Blue & Green can run on the same DB without downtime.
+
+Step 1 – Expand (Backward-compatible schema changes)
+
+On the EFM primary (via migration tool or Ansible):
+
+Add new columns/tables:
+
+ALTER TABLE users ADD COLUMN new_attr TEXT;
+
+Add new indexes:
+
+CREATE INDEX CONCURRENTLY idx_users_new_attr ON users(new_attr);
+
+Add views or functions needed by new app version.
+
+
+Rules:
+
+Don’t drop/rename columns used by Blue app.
+
+Don’t change data types in a breaking way.
+
+Avoid heavy blocking DDL in peak hours; use CONCURRENTLY where possible.
+
+
+Result:
+DB now supports both old and new code paths.
+
+
+---
+
+Step 2 – Deploy Green App (Blue–Green at app layer)
+
+1. Deploy Green app in parallel to Blue (new code version).
+
+
+2. Point a small % of traffic to Green:
+
+e.g. 5–10% of real users via load balancer.
+
+
+
+3. Monitor:
+
+Errors
+
+Latency
+
+DB locks / slow queries
+
+EFM health
+
+
+
+
+If there’s an issue:
+
+Route traffic back to Blue only.
+
+Fix Green app.
+
+No DB rollback needed (schema is still compatible).
+
+
+
+---
+
+Step 3 – Backfill / Data Migration (if needed)
+
+If new structures need historical data:
+
+Run background jobs against the same DB:
+
+Copy or transform data from old to new columns/tables in batches.
+
+e.g.:
+
+UPDATE users 
+SET new_attr = old_attr 
+WHERE new_attr IS NULL 
+LIMIT 10000;
+
+
+
+Run multiple times until fully backfilled.
+
+
+---
+
+Step 4 – Full Cutover to Green
+
+Once you’re confident:
+
+1. Gradually raise Green traffic:
+
+25% → 50% → 100%
+
+
+
+2. Keep Blue app instances alive but zero traffic for a short fallback window.
+
+
+3. If everything stable for agreed period:
+
+Decommission Blue version.
+
+
+
+
+Notice:
+DB never had to stop. EFM kept it HA the whole time.
+
+
+---
+
+Step 5 – Contract (Clean up old schema later)
+
+Only after rollback is no longer needed:
+
+Drop old columns no longer used by Green:
+
+ALTER TABLE users DROP COLUMN old_attr;
+
+Drop temporary views, compatibility triggers, etc.
+
+This can be done during a low-load window, but it’s not on the critical path of the release.
+
+
+
+---
+
+3. Where Does EFM Help in “Blue–Green”?
+
+EFM is for HA and switchover, not for Blue–Green logic itself.
+
+You use EFM to:
+
+1. Ensure DB is always available
+
+If primary dies, EFM promotes a standby and moves VIP / updates LB.
+
+Apps reconnect to same hostname → minimal blip.
+
+
+
+2. Do rolling infra / OS / minor Postgres updates
+
+Add a standby with patched OS / minor version.
+
+Wait for sync.
+
+Use EFM to do a controlled switchover from old primary to new node.
+
+Update old node and bring back as standby.
+
+
+
+
+So:
+
+Blue–Green is at APP level
+
+EFM gives HA + safe switchover at DB level
+
+
+This avoids any impact on your application-level replication to peer systems, because underlying DB endpoint and semantics remain consistent.
+
+
+---
+
+4. Using a Standby for PVT (Optional, but Useful)
+
+You can still use one standby to do UAT/PVT on realistic data, but:
+
+That standby is then a testing clone, not part of the live cluster.
+
+
+Pattern:
+
+1. Take db-standby3:
+
+Clone from primary (or detach + promote at a point-in-time).
+
+
+
+2. Promote it to standalone DB for PVT only.
+
+
+3. Business runs PVT on:
+
+New DB schema
+
+New app version
+
+
+
+4. Once PVT passed:
+
+Apply the same schema changes on the real primary.
+
+Then follow app Blue–Green rollout as above.
+
+
+
+5. When done, rebuild that PVT instance as a fresh standby and rejoin cluster.
+
+
+
+This gives business confidence without touching live production during PVT.
+
+
+---
+
+5. A Short “Best Practice” Summary You Can Paste in Confluence
+
+> Blue–Green Strategy with EFM + PostgreSQL 14 (No Logical Replication)
+
+Maintain a single EFM-managed production cluster (1 primary + N standbys).
+
+Implement Blue–Green at the application layer using load balancer routing.
+
+Use backward-compatible DB schema migrations (expand → backfill → contract) so Blue and Green can safely share the same DB.
+
+Use an EFM standby as a temporary PVT clone only, never as a live prod primary without a full cutover plan.
+
+Let EFM handle HA and planned switchover (for infra / minor upgrades), not Blue–Green switching.
+
+For each release:
+
+1. Expand schema (online, backward compatible).
+
+
+2. Deploy Green app and gradually shift traffic.
+
+
+3. Backfill data in background.
+
+
+4. Decommission Blue after stabilization.
+
+
+5. Contract schema later by dropping old objects.
+
+
+
+
+
+
+
+---
+
+If you want, next I can draft a proper Confluence page with sections like:
+
+Introduction / Problem
+
+Constraints (no logical replication, app-level replication exists)
+
+Proposed architecture (diagram in text form)
+
+Detailed deployment runbook
+
+Rollback strategy
+
+EFM-specific notes (VIP, failover, monitoring)
+
+
+You can then tweak and present it internally.

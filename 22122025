@@ -1,0 +1,219 @@
+From what you’ve described, the behavior you’re seeing is common on large PostgreSQL systems with huge pages enabled, and 100% swap usage does not automatically mean a problem. Let’s break it down clearly and tie it to your deadlock incident.
+1. Key facts from your setup
+PostgreSQL: 14.19
+DB size: ~4 TB
+RAM: 108 GB
+Swap: 8 GB (vmdk)
+Huge Pages: Enabled
+Swap usage: ~85% average, often 100%
+Deadlock: Occurred earlier, fixed at application level
+2. Why swap is almost always full (even when system looks healthy)
+🔹 Huge Pages + Linux memory behavior
+When huge pages are enabled:
+PostgreSQL shared memory (shared_buffers) is locked into RAM
+That memory cannot be swapped
+Linux then pushes rarely-used anonymous memory (glibc, idle backend memory, caches) to swap early
+👉 Result:
+Swap gets filled, but PostgreSQL critical memory stays in RAM
+This is expected and acceptable behavior.
+3. Why 8 GB swap fills up quickly on 108 GB RAM
+Linux treats swap as:
+A pressure relief valve
+A place to park cold pages
+With:
+Many backend processes
+Long-running connections
+Monitoring agents, cron jobs, shell sessions
+Even if each process swaps 10–50 MB, swap fills fast.
+Important:
+What matters is swap activity, not swap fullness.
+4. How to check if swap usage is actually harmful
+✅ Healthy (your likely case)
+si / so (swap in/out) ≈ 0
+No sustained CPU wait (wa)
+No PostgreSQL query latency spikes
+No oom-killer events
+No major pg_stat_activity stalls
+🚨 Problematic
+Constant swap-in/swap-out
+CPU high in wa
+Queries freezing under load
+Kernel logs with memory pressure
+5. Deadlocks are not related to swap usage
+Your deadlock issue:
+Was application-level
+Likely due to lock ordering or transaction design
+Resolved by code change (good)
+❗ Deadlocks are logical concurrency issues, not memory/swap problems.
+6. What you SHOULD verify (recommended checks)
+🔍 OS-level
+Copy code
+Bash
+vmstat 1 5
+si / so should be near 0
+Copy code
+Bash
+free -h
+Check available memory, not “used”
+Copy code
+Bash
+swapon --show
+🔍 PostgreSQL-level
+Copy code
+Sql
+SHOW shared_buffers;
+SHOW huge_pages;
+SHOW work_mem;
+SHOW max_connections;
+Also:
+Copy code
+Sql
+SELECT count(*) FROM pg_stat_activity;
+High idle connections → more swap usage.
+7. Practical tuning recommendations (safe)
+✅ Keep huge pages enabled
+You’re doing the right thing for:
+Large RAM
+4 TB DB
+Stable performance
+⚙️ Increase swap size (recommended)
+8 GB swap is too small for a 108 GB RAM system.
+Suggested:
+Swap = 16–32 GB
+Even if unused, it prevents memory pressure spikes
+This is especially important during:
+Autovacuum bursts
+Checkpoints
+Backup jobs
+Kernel memory fragmentation
+⚙️ Adjust swappiness
+Copy code
+Bash
+sysctl vm.swappiness=10
+Persist in:
+Copy code
+Bash
+/etc/sysctl.conf
+This:
+Keeps PostgreSQL memory in RAM
+Still allows emergency swap usage
+⚙️ Review connection count
+If max_connections is very high:
+Each backend consumes private memory
+Consider PgBouncer (transaction pooling)
+8. Bottom line (executive summary)
+✔ Swap being 85–100% used is normal with huge pages
+✔ No link between swap usage and deadlocks
+✔ Problem only if swap I/O is active
+✔ Increase swap to 16–32 GB for safety
+✔ Keep huge pages enabled
+✔ Monitor swap-in/out, not swap size
+If you want, I can:
+Review your PostgreSQL memory parameters
+Suggest exact huge_pages calculation
+Help you size swap optimally for PostgreSQL 14
+Correlate swap usage with autovacuum/checkpoints
+Just share:
+shared_buffers
+work_mem
+max_connections
+vmstat 1 5 output
+
+
+
+Here’s a clear, production-oriented comparison of
+log_lock_waits = on vs log_lock_waits = off in PostgreSQL 14.19, focused on what actually gets logged and when you should use each.
+🔁 What PostgreSQL means by a “lock wait”
+A lock wait is logged only if:
+a session waits longer than deadlock_timeout
+AND log_lock_waits = on
+Deadlocks are detected during this same mechanism.
+⚙️ log_lock_waits = off (DEFAULT)
+Behavior
+❌ No lock waits are logged
+❌ Deadlocks are NOT logged
+✔ PostgreSQL still detects and resolves deadlocks internally
+✔ Client still receives error SQLSTATE 40P01
+What you see in logs
+Nothing related to locks:
+Copy code
+
+(no lock-related entries)
+When to use
+Extremely log-sensitive environments
+You rely only on application-side retry & logging
+You don’t need server-side deadlock visibility
+⚠️ Risk: Deadlocks can occur silently unless the app logs them.
+⚙️ log_lock_waits = on
+Behavior
+✔ Logs long lock waits (> deadlock_timeout)
+✔ Logs deadlocks
+✔ Adds minimal overhead
+❌ Can generate noise if deadlock_timeout is large
+What you see in logs
+Long lock wait (not a deadlock):
+Copy code
+
+LOG: process 12345 still waiting for ShareLock on transaction 67890 after 1000.000 ms
+Deadlock (this is what you care about):
+Copy code
+
+ERROR: deadlock detected
+DETAIL: Process 111 waits for ExclusiveLock on relation 222; blocked by process 333.
+When to use
+You want server-side evidence of deadlocks
+You want minimal but critical lock diagnostics
+Recommended for most production systems
+🎯 Key difference (simple table)
+Feature
+off
+on
+Deadlock logged
+❌ No
+✅ Yes
+Long lock waits logged
+❌ No
+✅ Yes (> deadlock_timeout)
+Overhead
+None
+Very low
+Log noise
+None
+Low (if tuned)
+RCA friendly
+❌
+✅
+🧠 Important nuance (very relevant for you)
+PostgreSQL cannot log only deadlocks.
+The only way to capture deadlocks is:
+Copy code
+Conf
+log_lock_waits = on
+Then control noise using:
+Copy code
+Conf
+deadlock_timeout = 1s
+Lower timeout = faster detection
+Higher timeout = fewer lock-wait logs
+✅ Recommended setting for your case
+Given:
+Deadlock already fixed in application
+You want only problematic locks
+You want minimal logs
+👉 Best compromise
+Copy code
+Conf
+log_lock_waits = on
+deadlock_timeout = 1s
+log_min_messages = error
+This ensures:
+Deadlocks are always logged
+Normal locks stay quiet
+No restart needed
+🔚 Final takeaway
+off = blind to deadlocks
+on  = safety net with low noise
+If you want, I can next:
+Show exact log lines you’ll see
+Explain how deadlock_timeout impacts OLTP systems
+Help create a runbook for lock incidents

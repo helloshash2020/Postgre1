@@ -1,0 +1,42 @@
+Users
+  │
+  ▼
+On-Prem Launcher Application
+(SSO + Session Owner)
+  │  JWT (OIDC)
+  │
+  ▼
+────────────────────────────────────────────
+GCP PERIMETER (EDMZ)
+────────────────────────────────────────────
+External HTTPS Load Balancer
++ Cloud Armor (WAF / DDoS)
+  │
+  ▼
+────────────────────────────────────────────
+GCP INTERNAL ZONE (IDMZ)
+────────────────────────────────────────────
+Internal HTTPS Load Balancer
+  │
+  ▼
+────────────────────────────────────────────
+PRIVATE GKE CLUSTER
+────────────────────────────────────────────
+Ingress Controller
+(JWT Validation)
+  │
+  ▼
+Spring Boot Microservices (Stateless APIs)
+  │
+  ├──► Redis Cache (Memorystore)
+  │       • User context
+  │       • Reference data
+  │
+  ├──► Cloud SQL (Private IP)
+  │       • Transactional data
+  │       • HA + Backups
+  │
+  └──► Filestore / GCS
+          • Secure file processing
+          • Batch / large files
+          • Shared access (if needed)

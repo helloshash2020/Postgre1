@@ -40,3 +40,143 @@ Spring Boot Microservices (Stateless APIs)
           • Secure file processing
           • Batch / large files
           • Shared access (if needed)
+
+
+
+Below is a clear, complete list of GCP tools/services used in this architecture, mapped to purpose, following GCP security and enterprise best practices.
+This is architecture-review ready and suitable for Confluence.
+✅ GCP Tools Used – High-Level Secure Architecture
+🌐 Networking & Perimeter Security
+GCP Tool
+Purpose
+VPC
+Isolated private network for all GCP resources
+Cloud VPN / Dedicated Interconnect
+Secure connectivity from on-prem to GCP
+External HTTPS Load Balancer
+Customer-facing entry point
+Internal HTTPS Load Balancer
+Private routing to GKE
+Firewall Rules
+Least-privilege traffic control
+Private Google Access
+Access GCP APIs without public IPs
+🛡 Edge Security & Protection
+GCP Tool
+Purpose
+Cloud Armor
+WAF, DDoS protection, rate limiting
+TLS (Google Front End)
+Encryption in transit
+IP Allowlisting
+Restrict traffic to trusted sources
+🔐 Identity, Authentication & Secrets
+GCP Tool
+Purpose
+IAM
+Access control for users & services
+Workload Identity
+Pod-to-GCP service authentication
+Secret Manager
+Secure storage of secrets
+OAuth 2.0 / OIDC (External IdP)
+JWT-based SSO
+Certificate Manager
+TLS certificate management
+☸️ Compute & Application Layer
+GCP Tool
+Purpose
+Google Kubernetes Engine (GKE)
+Run Spring Boot microservices
+Private GKE Cluster
+No public node exposure
+GKE Ingress
+Traffic routing & JWT validation
+Horizontal Pod Autoscaler
+Auto-scaling based on load
+🧠 Cache Layer
+GCP Tool
+Purpose
+Cloud Memorystore (Redis)
+Low-latency caching
+TTL-based Cache
+Automatic eviction
+🗄 Database Layer
+GCP Tool
+Purpose
+Cloud SQL (Private IP)
+Managed relational database
+Cloud SQL Auth Proxy / Connector
+Secure DB access
+Automated Backups & HA
+Data protection & resilience
+📁 File Storage & Processing
+GCP Tool
+Purpose
+Cloud Storage (GCS)
+Secure file ingestion & staging
+Filestore
+Shared POSIX file system (if required)
+Pub/Sub
+Event-driven file processing
+CMEK (KMS)
+Encryption for sensitive files
+📊 Observability & Operations
+GCP Tool
+Purpose
+Cloud Logging
+Centralized logs
+Cloud Monitoring
+Metrics & alerts
+Cloud Trace
+Distributed tracing
+Error Reporting
+Application error visibility
+🔍 Security, Compliance & Governance
+GCP Tool
+Purpose
+VPC Service Controls
+Prevent data exfiltration
+Cloud Audit Logs
+Compliance & auditing
+Security Command Center
+Security posture management
+Binary Authorization (Optional)
+Trusted container images
+🧩 CI/CD & Container Security (Optional but Recommended)
+GCP Tool
+Purpose
+Artifact Registry
+Store container images
+Cloud Build / Jenkins
+CI/CD pipelines
+Container Analysis
+Vulnerability scanning
+🔄 How These Tools Work Together (Simplified)
+Copy code
+
+User
+ → External HTTPS LB + Cloud Armor
+ → Internal HTTPS LB
+ → GKE (Spring Boot APIs)
+ → Redis (Cache)
+ → Cloud SQL (DB)
+ → GCS / Filestore (Files)
+All access is:
+🔒 Private
+🔒 IAM-controlled
+🔒 Encrypted
+🔒 Audited
+✅ Why This Toolset Is Best Practice
+Fully managed GCP services
+No hardcoded secrets
+No public database exposure
+Stateless, scalable design
+Zero-Trust ready
+Enterprise compliant
+📄 Next, I can give you:
+One-page architecture slide (PPT)
+Confluence “Technology Stack” section
+Security control mapping
+Cost-optimized alternative design
+Just tell me what you want next.

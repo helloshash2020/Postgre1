@@ -1,0 +1,299 @@
+PostgreSQL Resiliency & Recovery Readiness Walkthrough
+
+Part 1 — VCS / SAN Resiliency for Corruption Scenarios (15 Minutes)
+
+
+---
+
+1. Context Setting
+
+Objective
+
+Strengthen database resiliency and recovery readiness against:
+
+Physical corruption
+
+Logical corruption
+
+Silent corruption
+
+Recovery failures
+
+Replication of corrupted data across environments
+
+
+Key Message
+
+Traditional infrastructure failover protects against server/storage failures, but corruption can still propagate across replicated environments.
+
+
+---
+
+2. Existing Environment Overview
+
+Production Setup
+
+PostgreSQL Primary + Standby
+
+VCS-based failover
+
+SAN replication to DR
+
+
+DR Setup
+
+SAN replicated copy
+
+Recovery capability available during infrastructure failure scenarios
+
+
+Observation
+
+Infrastructure availability existed, but corruption resiliency and recovery validation required improvement.
+
+
+---
+
+3. Gaps Identified
+
+Risk Area	Impact
+
+Silent corruption	Data issues may remain undetected
+SAN-level replication	Corruption may replicate to DR
+Backup not validated	Recovery uncertainty during incidents
+No PITR testing	Risk during actual recovery
+Dependency on manual knowledge	Slower recovery response
+
+
+
+---
+
+4. Resiliency Improvements Implemented
+
+A. Corruption Detection Controls
+
+Implemented:
+
+PostgreSQL checksums
+
+amcheck validation
+
+Proactive log monitoring
+
+
+Outcome
+
+Improved early detection capability for physical and logical corruption scenarios.
+
+
+---
+
+B. Recovery Validation
+
+Implemented:
+
+Physical backup restore validation
+
+PITR validation
+
+WAL validation procedures
+
+Logical backup validation
+
+
+Outcome
+
+Validated that backups are not only generated successfully but are also recoverable.
+
+
+---
+
+C. Operational Recovery Procedures
+
+Implemented:
+
+Recovery SOPs
+
+PITR runbooks
+
+Corruption handling procedures
+
+Recovery validation steps
+
+
+Outcome
+
+Reduced operational dependency and improved incident response readiness.
+
+
+---
+
+D. Monitoring & Operational Readiness
+
+Implemented:
+
+Log-based corruption monitoring
+
+Backup verification process
+
+Recovery validation process
+
+Standardized operational checks
+
+
+Outcome
+
+Improved operational visibility and recovery preparedness.
+
+
+---
+
+5. Key Benefits Achieved
+
+Area	Improvement
+
+Early corruption detection	Improved
+Recovery confidence	Increased
+Recovery readiness	Standardized
+Operational resiliency	Improved
+Recovery validation	Established
+
+
+
+---
+
+6. Closing Summary
+
+Final Message
+
+The focus was to move from only infrastructure availability to complete database resiliency by introducing corruption detection, recovery validation, and tested operational recovery capabilities.
+
+====================================================================
+
+Part 2 — EFM Testing & Recovery Scenarios (15 Minutes)
+
+
+---
+
+1. Why EFM
+
+VCS/SAN vs EFM
+
+VCS/SAN	EFM
+
+Infrastructure-focused failover	Database-aware failover
+Storage-centric	PostgreSQL-centric
+Handles node/storage failure	Understands DB state
+Limited corruption awareness	Better database recovery awareness
+
+
+Objective
+
+Improve database-level failover and recovery orchestration.
+
+
+---
+
+2. EFM Testing Scenarios Performed
+
+Scenario 1 — Primary Database Failure
+
+Tested
+
+Automatic standby promotion
+
+Failover handling
+
+Service continuity
+
+Recovery timing
+
+
+Outcome
+
+Validated automatic failover capability and recovery readiness.
+
+
+---
+
+Scenario 2 — Network Isolation Scenario
+
+Tested
+
+Cluster communication handling
+
+Witness functionality
+
+Split-brain prevention
+
+
+Outcome
+
+Validated cluster protection and failover decision capability.
+
+
+---
+
+Scenario 3 — PITR & WAL Recovery Validation
+
+Tested
+
+Archived WAL recovery
+
+PITR validation
+
+Recovery consistency validation
+
+
+Outcome
+
+Validated recoverability objectives during recovery scenarios.
+
+
+---
+
+Scenario 4 — Corruption Recovery Readiness
+
+Tested
+
+Backup restore procedures
+
+PITR recovery process
+
+Recovery operational procedures
+
+Recovery validation checks
+
+
+Outcome
+
+Validated preparedness for logical and physical corruption scenarios.
+
+
+---
+
+3. Key Learnings
+
+Learning	Benefit
+
+Recovery must be validated	Improved recovery confidence
+Corruption may propagate through replication	Detection controls are critical
+Failover alone is not sufficient	PITR capability remains essential
+Operational procedures are important	Faster recovery response
+
+
+
+---
+
+4. Final Conclusion
+
+Final Message
+
+The initiative improved overall database resiliency, recoverability, corruption detection capability, and operational readiness across both VCS/SAN and EFM-based environments.
+
+
+---
+
+Suggested Closing Statement for Management
+
+"The overall objective was to improve resilience not only at infrastructure level, but also at the data and recovery level through proactive corruption detection, validated recovery procedures, and operational readiness testing."

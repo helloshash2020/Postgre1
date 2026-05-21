@@ -1,0 +1,67 @@
+After PITR (Point-In-Time Recovery) is completed, these are the main validation checks to confirm recovery was successful:
+PITR Success Validation Steps
+1. Confirm PostgreSQL Started Successfully
+Check database status:
+Bash
+systemctl status postgresql
+or
+Bash
+pg_isready
+Ensure DB is accepting connections.
+2. Verify Recovery Reached Target Time
+Check PostgreSQL logs for messages like:
+Plain text
+recovery stopping before commit
+completed recovery
+database system is ready to accept connections
+and confirm the recovery target timestamp was reached.
+3. Validate Recovery Mode Ended
+Run:
+SQL
+SELECT pg_is_in_recovery();
+Expected result after successful PITR:
+Plain text
+f
+Meaning recovery completed successfully.
+4. Verify Required Data Exists
+Check:
+Critical tables
+Recent transactions
+Expected records before corruption/deletion
+Example:
+SQL
+SELECT count(*) FROM important_table;
+Validate business-critical data.
+5. Verify Corrupted/Deleted Data State
+Confirm:
+Accidentally deleted data is restored OR
+Corrupted/unwanted transaction is excluded
+This is one of the most important PITR validations.
+6. Run Integrity Validation
+If using checksums/amcheck:
+SQL
+CREATE EXTENSION IF NOT EXISTS amcheck;
+
+SELECT bt_index_check(indexrelid)
+FROM pg_index
+WHERE indisvalid;
+This validates index consistency.
+7. Review PostgreSQL Logs
+Check for:
+PANIC
+corruption
+invalid page
+WAL replay failure
+checksum errors
+Example:
+Bash
+grep -Ei "PANIC|ERROR|corrupt|checksum" postgresql.log
+8. Validate Application Connectivity
+Ensure:
+Application connects successfully
+Read/write operations work
+No functional errors observed
+Simple Management Statement
+“PITR recovery validation was successfully completed by verifying database startup, WAL replay completion, recovery target consistency, data integrity, and application connectivity.”
+Or shorter:
+“PITR success was validated through recovery completion checks, data validation, and integrity verification.”

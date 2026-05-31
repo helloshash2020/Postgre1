@@ -1,0 +1,371 @@
+const express = require("express");
+const cors = require("cors");
+const { Client } = require("pg");
+const { NodeSSH } = require("node-ssh");
+
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+/*******************************************
+ * POSTGRES COLLECTION
+ *******************************************/
+
+async function getPgSettings(pgConfig) {
+
+    const client = new Client(pgConfig);
+
+    await client.connect();
+
+    const settings =
+        await client.query(`
+            SELECT
+                name,
+                setting
+            FROM pg_settings
+            ORDER BY name
+        `);
+
+    const version =
+        await client.query(`
+            SELECT version()
+        `);
+
+    const extensions =
+        await client.query(`
+            SELECT
+                extname,
+                extversion
+            FROM pg_extension
+        `);
+
+    const databases =
+        await client.query(`
+            SELECT
+                datname,
+                pg_database_size(datname)
+            FROM pg_database
+        `);
+
+    const roles =
+        await client.query(`
+            SELECT
+                rolname,
+                rolsuper,
+                rolcreatedb
+            FROM pg_roles
+        `);
+
+    await client.end();
+
+    return {
+        settings: settings.rows,
+        version: version.rows,
+        extensions: extensions.rows,
+        databases: databases.rows,
+        roles: roles.rows
+    };
+}
+
+/*******************************************
+ * OS COLLECTION
+ *******************************************/
+
+async function getOSData(sshConfig) {
+
+    const ssh = new NodeSSH();
+
+    await ssh.connect(sshConfig);
+
+    async function exec(cmd) {
+
+        const result =
+            await ssh.execCommand(cmd);
+
+        return result.stdout;
+    }
+
+    const data = {
+
+        hostname:
+            await exec("hostname"),
+
+        cpu:
+            await exec("lscpu"),
+
+        memory:
+            await exec("free -h"),
+
+        filesystem:
+            await exec("df -h"),
+
+        blockDevices:
+            await exec("lsblk"),
+
+        mounts:
+            await exec("mount"),
+
+        kernel:
+            await exec("uname -r"),
+
+        sysctl:
+            await exec("sysctl -a"),
+
+        limits:
+            await exec("cat /etc/security/limits.conf"),
+
+        selinux:
+            await exec("getenforce"),
+
+        firewall:
+            await exec(
+                "firewall-cmd --list-all || true"
+            )
+    };
+
+    ssh.dispose();
+
+    return data;
+}
+
+/*******************************************
+ * GENERIC COMPARISON
+ *******************************************/
+
+function compareArray(
+    envA,
+    envB,
+    keyField,
+    valueField
+) {
+
+    const map =
+        new Map();
+
+    envB.forEach(item => {
+
+        map.set(
+            item[keyField],
+            item[valueField]
+        );
+    });
+
+    const diff = [];
+
+    envA.forEach(item => {
+
+        const envBValue =
+            map.get(
+                item[keyField]
+            );
+
+        if (
+            envBValue !== undefined &&
+            envBValue !== item[valueField]
+        ) {
+
+            diff.push({
+
+                parameter:
+                    item[keyField],
+
+                envA:
+                    item[valueField],
+
+                envB:
+                    envBValue
+            });
+        }
+    });
+
+    return diff;
+}
+
+/*******************************************
+ * POSTGRES COMPARISON
+ *******************************************/
+
+function comparePostgres(
+    pgA,
+    pgB
+) {
+
+    return {
+
+        settings:
+            compareArray(
+                pgA.settings,
+                pgB.settings,
+                "name",
+                "setting"
+            ),
+
+        extensions:
+            compareArray(
+                pgA.extensions,
+                pgB.extensions,
+                "extname",
+                "extversion"
+            )
+    };
+}
+
+/*******************************************
+ * OS COMPARISON
+ *******************************************/
+
+function compareOS(
+    osA,
+    osB
+) {
+
+    const differences = [];
+
+    Object.keys(osA)
+        .forEach(key => {
+
+        if (
+            osA[key] !==
+            osB[key]
+        ) {
+
+            differences.push({
+
+                component:
+                    key,
+
+                envA:
+                    osA[key],
+
+                envB:
+                    osB[key]
+            });
+        }
+    });
+
+    return differences;
+}
+
+/*******************************************
+ * DRIFT SCORE
+ *******************************************/
+
+function calculateScore(
+    pgDiff,
+    osDiff
+) {
+
+    let totalDiff =
+
+        pgDiff.settings.length +
+        pgDiff.extensions.length +
+        osDiff.length;
+
+    let score =
+        100 - totalDiff;
+
+    if (score < 0)
+        score = 0;
+
+    return score;
+}
+
+/*******************************************
+ * API
+ *******************************************/
+
+app.post(
+    "/api/compare",
+    async (req, res) => {
+
+    try {
+
+        const {
+            envA,
+            envB
+        } = req.body;
+
+        const pgA =
+            await getPgSettings(
+                envA.pg
+            );
+
+        const pgB =
+            await getPgSettings(
+                envB.pg
+            );
+
+        const osA =
+            await getOSData(
+                envA.ssh
+            );
+
+        const osB =
+            await getOSData(
+                envB.ssh
+            );
+
+        const pgDiff =
+            comparePostgres(
+                pgA,
+                pgB
+            );
+
+        const osDiff =
+            compareOS(
+                osA,
+                osB
+            );
+
+        const score =
+            calculateScore(
+                pgDiff,
+                osDiff
+            );
+
+        res.json({
+
+            driftScore:
+                score,
+
+            postgres:
+                pgDiff,
+
+            os:
+                osDiff,
+
+            summary: {
+
+                postgresSettings:
+                    pgDiff.settings.length,
+
+                extensions:
+                    pgDiff.extensions.length,
+
+                osDifferences:
+                    osDiff.length
+            }
+        });
+
+    } catch (err) {
+
+        console.error(err);
+
+        res.status(500)
+           .json({
+               error:
+                   err.message
+           });
+    }
+});
+
+app.listen(
+    3001,
+    () => {
+
+        console.log(
+            "PG Compare API Started"
+        );
+    }
+);

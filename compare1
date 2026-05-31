@@ -1,0 +1,159 @@
+const { NodeSSH } = require('node-ssh');
+
+async function executeCommand(ssh, command) {
+    try {
+        const result = await ssh.execCommand(command);
+        return result.stdout || result.stderr || "";
+    } catch (err) {
+        return `ERROR: ${err.message}`;
+    }
+}
+
+async function getOSDetails(sshConfig) {
+
+    const ssh = new NodeSSH();
+
+    await ssh.connect({
+        host: sshConfig.host,
+        username: sshConfig.username,
+        password: sshConfig.password
+        // privateKey: sshConfig.privateKey
+    });
+
+    const details = {
+
+        system: {
+            hostname: await executeCommand(ssh, "hostname"),
+            osVersion: await executeCommand(ssh, "cat /etc/redhat-release"),
+            kernelVersion: await executeCommand(ssh, "uname -r"),
+            uptime: await executeCommand(ssh, "uptime")
+        },
+
+        cpu: {
+            lscpu: await executeCommand(ssh, "lscpu"),
+            cpuCount: await executeCommand(ssh, "nproc")
+        },
+
+        memory: {
+            free: await executeCommand(ssh, "free -h"),
+            meminfo: await executeCommand(ssh, "cat /proc/meminfo | egrep 'MemTotal|SwapTotal|Huge'")
+        },
+
+        hugePages: {
+            details: await executeCommand(
+                ssh,
+                "cat /proc/meminfo | grep Huge"
+            )
+        },
+
+        transparentHugePages: {
+            enabled: await executeCommand(
+                ssh,
+                "cat /sys/kernel/mm/transparent_hugepage/enabled"
+            )
+        },
+
+        storage: {
+            filesystem: await executeCommand(
+                ssh,
+                "df -h"
+            ),
+
+            blockDevices: await executeCommand(
+                ssh,
+                "lsblk"
+            ),
+
+            mounts: await executeCommand(
+                ssh,
+                "mount"
+            ),
+
+            diskUsage: await executeCommand(
+                ssh,
+                "du -sh /var/lib/pgsql 2>/dev/null"
+            )
+        },
+
+        network: {
+            interfaces: await executeCommand(
+                ssh,
+                "ip addr"
+            ),
+
+            routes: await executeCommand(
+                ssh,
+                "ip route"
+            )
+        },
+
+        kernelParameters: {
+            swappiness: await executeCommand(
+                ssh,
+                "sysctl vm.swappiness"
+            ),
+
+            dirtyRatio: await executeCommand(
+                ssh,
+                "sysctl vm.dirty_ratio"
+            ),
+
+            dirtyBackgroundRatio: await executeCommand(
+                ssh,
+                "sysctl vm.dirty_background_ratio"
+            ),
+
+            shmmax: await executeCommand(
+                ssh,
+                "sysctl kernel.shmmax"
+            ),
+
+            shmall: await executeCommand(
+                ssh,
+                "sysctl kernel.shmall"
+            ),
+
+            fileMax: await executeCommand(
+                ssh,
+                "sysctl fs.file-max"
+            )
+        },
+
+        postgresOSSettings: {
+            limits: await executeCommand(
+                ssh,
+                "cat /etc/security/limits.conf"
+            ),
+
+            postgresUser: await executeCommand(
+                ssh,
+                "id postgres"
+            ),
+
+            postgresDirs: await executeCommand(
+                ssh,
+                "ls -ld /var/lib/pgsql /var/lib/pgsql/* 2>/dev/null"
+            )
+        },
+
+        security: {
+            selinux: await executeCommand(
+                ssh,
+                "getenforce"
+            ),
+
+            firewall: await executeCommand(
+                ssh,
+                "firewall-cmd --list-all || true"
+            )
+        }
+    };
+
+    ssh.dispose();
+
+    return details;
+}
+
+module.exports = {
+    getOSDetails
+};

@@ -1,0 +1,766 @@
+Qlik to PostgreSQL High Availability Connectivity
+
+Solution Design – PostgreSQL 16 with EFM 5.4
+
+---
+
+1. Executive Summary
+
+The current PostgreSQL environment uses PostgreSQL 16 with EDB Failover Manager (EFM) 5.4 to provide database high availability across multiple nodes and subnets.
+
+The Qlik platform consumes data from PostgreSQL but has a key connectivity limitation: Qlik can be configured with only a single database endpoint/IP.
+
+Because the PostgreSQL nodes are deployed across different subnets/data centers, a traditional PostgreSQL Virtual IP (VIP) cannot be used as a common client endpoint.
+
+The proposed solution introduces an Enterprise Load Balancer as the client-facing connectivity layer.
+
+The final architecture will be:
+
+Qlik → FQDN → Enterprise Load Balancer → PostgreSQL Node 1 / Node 2 / Node 3 / Node 4
+
+The Load Balancer will use the EFM 5.4 primary health-check endpoint to determine which PostgreSQL node is currently the primary.
+
+This provides:
+
+- One stable endpoint for Qlik
+- No PostgreSQL VIP requirement
+- Automatic routing to the current PostgreSQL primary
+- Compatibility with the existing EFM HA architecture
+- No requirement for HAProxy or Pgpool-II
+- Minimal change to the Qlik configuration
+
+The design separates responsibilities clearly:
+
+- EFM manages PostgreSQL HA and database role changes.
+- Load Balancer provides the stable client endpoint and routes connections.
+- DNS/FQDN provides a stable logical name.
+- Qlik connects only to the FQDN.
+
+---
+
+2. Problem Statement
+
+The existing PostgreSQL HA environment has multiple PostgreSQL nodes distributed across different subnets/data centers.
+
+EFM 5.4 provides automatic PostgreSQL failover, but Qlik requires a single connection endpoint.
+
+The following constraints exist:
+
+1. Qlik can be configured with only one PostgreSQL endpoint.
+2. PostgreSQL primary and standby nodes are located in different subnets.
+3. A common PostgreSQL VIP cannot be implemented across the required subnets.
+4. Directly configuring Qlik with individual PostgreSQL node IPs is not suitable.
+5. A simple TCP check on PostgreSQL port 5432 cannot reliably determine the database role because standby nodes may also accept TCP connections.
+
+Therefore, a mechanism is required that provides:
+
+One stable endpoint for Qlik + automatic identification of the PostgreSQL primary.
+
+---
+
+3. Existing Environment
+
+The database platform consists of:
+
+- PostgreSQL 16
+- EDB Failover Manager 5.4
+- Four PostgreSQL database nodes
+- EFM witness as part of the existing HA architecture
+- PostgreSQL nodes distributed across multiple subnets/data centers
+- Qlik as the downstream data consumer
+
+The database HA mechanism remains unchanged.
+
+EFM continues to be responsible for:
+
+- Cluster membership
+- PostgreSQL role management
+- Primary failure detection
+- Standby promotion
+- Database failover
+
+---
+
+4. Design Objective
+
+The solution must satisfy the following objectives:
+
+Availability
+
+Qlik should be able to connect to the current PostgreSQL primary after an EFM-managed failover.
+
+Single Endpoint
+
+Qlik should require only one configured database endpoint.
+
+No PostgreSQL VIP
+
+The solution should not depend on a PostgreSQL VIP spanning different subnets.
+
+Automatic Role Awareness
+
+The connectivity layer must distinguish between:
+
+- Primary
+- Standby
+
+Minimal Application Change
+
+Qlik should not require a database-node-specific IP configuration.
+
+Operational Simplicity
+
+The solution should use the existing enterprise Load Balancer capability rather than introducing HAProxy or Pgpool-II.
+
+---
+
+5. Proposed Architecture
+
+The recommended architecture is:
+
+                         ┌──────────────┐
+                         │     QLIK     │
+                         └──────┬───────┘
+                                │
+                                │
+                     FQDN: postgres-ha.company.com
+                                │
+                                ▼
+                    ┌──────────────────────┐
+                    │  ENTERPRISE LOAD     │
+                    │      BALANCER        │
+                    │                      │
+                    │  Frontend / VIP      │
+                    │  TCP 5432            │
+                    └──────────┬───────────┘
+                               │
+             ┌─────────────────┼─────────────────┐
+             │                 │                 │
+             ▼                 ▼                 ▼
+       ┌──────────┐      ┌──────────┐      ┌──────────┐
+       │ Node 1   │      │ Node 2   │      │ Node 3   │
+       │ PG16     │      │ PG16     │      │ PG16     │
+       │ EFM 5.4  │      │ EFM 5.4  │      │ EFM 5.4  │
+       └──────────┘      └──────────┘      └──────────┘
+                                                  │
+                                                  ▼
+                                           ┌──────────┐
+                                           │ Node 4   │
+                                           │ PG16     │
+                                           │ EFM 5.4  │
+                                           └──────────┘
+
+The FQDN resolves to the Load Balancer frontend address.
+
+Qlik therefore does not need to know the individual PostgreSQL node IP addresses.
+
+---
+
+6. Logical Connectivity Flow
+
+The connection flow is:
+
+Qlik
+  |
+  | PostgreSQL connection
+  | postgres-ha.company.com:5432
+  |
+  ▼
+DNS
+  |
+  ▼
+Load Balancer Frontend IP
+  |
+  +-------------------------------+
+  |               |               |
+  ▼               ▼               ▼
+Node 1          Node 2          Node 3          Node 4
+PG16            PG16            PG16            PG16
+EFM 5.4         EFM 5.4         EFM 5.4         EFM 5.4
+
+The Load Balancer maintains health-check status for all PostgreSQL nodes.
+
+However, the health check must be role-aware.
+
+---
+
+7. EFM 5.4 Primary Health Check
+
+EFM 5.4 provides a primary health-check mechanism that can be used by a Load Balancer.
+
+Configure the EFM property:
+
+primary.health.check.port=8080
+
+on each PostgreSQL/EFM node.
+
+The Load Balancer performs an HTTP health check against the EFM endpoint.
+
+Expected behavior:
+
+Node 1 :8080 → HTTP 200 → PRIMARY
+Node 2 :8080 → HTTP 404 → NOT PRIMARY
+Node 3 :8080 → HTTP 404 → NOT PRIMARY
+Node 4 :8080 → HTTP 404 → NOT PRIMARY
+
+The Load Balancer should therefore make only the node returning HTTP 200 eligible for PostgreSQL client traffic.
+
+This is preferable to using only a TCP/5432 health check.
+
+A TCP/5432 check only confirms that PostgreSQL is reachable; it does not reliably establish which node is currently the primary.
+
+---
+
+8. Normal Operating State
+
+Example:
+
+Node 1 = PRIMARY
+Node 2 = STANDBY
+Node 3 = STANDBY
+Node 4 = STANDBY
+
+EFM health checks:
+
+Node 1 :8080 → 200
+Node 2 :8080 → 404
+Node 3 :8080 → 404
+Node 4 :8080 → 404
+
+Load Balancer state:
+
+Node 1 → ACTIVE
+Node 2 → INACTIVE
+Node 3 → INACTIVE
+Node 4 → INACTIVE
+
+Qlik connection:
+
+Qlik
+  |
+  ▼
+postgres-ha.company.com:5432
+  |
+  ▼
+Load Balancer
+  |
+  ▼
+Node 1 – PostgreSQL PRIMARY
+
+---
+
+9. Failover Scenario
+
+Assume Node 1 is the current primary.
+
+If Node 1 fails, EFM performs its normal failure detection and promotes an eligible standby according to the existing EFM configuration.
+
+For example:
+
+BEFORE
+
+Node 1 → PRIMARY
+Node 2 → STANDBY
+Node 3 → STANDBY
+Node 4 → STANDBY
+
+After failover:
+
+AFTER
+
+Node 1 → NOT PRIMARY / FAILED
+Node 2 → PRIMARY
+Node 3 → STANDBY
+Node 4 → STANDBY
+
+The EFM health checks consequently become:
+
+Node 1 → HTTP 404
+Node 2 → HTTP 200
+Node 3 → HTTP 404
+Node 4 → HTTP 404
+
+The Load Balancer then identifies Node 2 as the active PostgreSQL backend.
+
+                         QLIK
+                           |
+                           |
+                    postgres-ha.company.com
+                           |
+                           ▼
+                    Load Balancer
+                           |
+                           |
+                           ▼
+                    Node 2 :5432
+                    PostgreSQL PRIMARY
+
+Qlik continues using the same FQDN.
+
+No Qlik configuration change is required.
+
+---
+
+10. Important Connection Behavior
+
+The solution provides automatic routing for new PostgreSQL connections.
+
+An existing TCP connection that was established to a failed PostgreSQL primary cannot be transferred by the Load Balancer to another PostgreSQL server.
+
+Therefore, during an actual database failure:
+
+Existing Qlik session
+        |
+        X
+Connection lost
+
+Qlik must establish a new connection.
+
+The Qlik connector/job configuration should therefore be tested to confirm its connection retry/reconnect behavior.
+
+The architecture guarantees endpoint stability; application-level session recovery must be validated separately.
+
+---
+
+11. DNS / FQDN Design
+
+Create a dedicated database service FQDN, for example:
+
+postgres-ha.company.com
+
+DNS should resolve this name to the Load Balancer frontend address.
+
+The intended flow is:
+
+postgres-ha.company.com
+          |
+          ▼
+      DNS Server
+          |
+          ▼
+    Load Balancer VIP
+          |
+          ▼
+PostgreSQL Primary
+
+Qlik should use:
+
+Host: postgres-ha.company.com
+Port: 5432
+
+The individual PostgreSQL node IP addresses should not be configured in Qlik.
+
+---
+
+12. Load Balancer Configuration
+
+The Load Balancer should contain:
+
+Frontend
+
+Listener:
+TCP 5432
+
+Frontend:
+postgres-ha.company.com
+
+Backend Pool
+
+PostgreSQL Node 1 :5432
+PostgreSQL Node 2 :5432
+PostgreSQL Node 3 :5432
+PostgreSQL Node 4 :5432
+
+Role-Aware Health Check
+
+The Load Balancer should check:
+
+Node 1 :8080
+Node 2 :8080
+Node 3 :8080
+Node 4 :8080
+
+Health interpretation:
+
+HTTP 200 → Primary → Eligible
+HTTP 404 → Not Primary → Not eligible
+
+The exact HTTP URI, health-check interval, timeout and LB-specific configuration should be finalized according to the enterprise Load Balancer product and its supported HTTP health-check configuration.
+
+---
+
+13. Network Requirements
+
+The following connectivity is required.
+
+Source| Destination| Port| Purpose
+Qlik| Load Balancer| 5432| PostgreSQL connection
+Load Balancer| PG Node 1| 5432| PostgreSQL backend
+Load Balancer| PG Node 2| 5432| PostgreSQL backend
+Load Balancer| PG Node 3| 5432| PostgreSQL backend
+Load Balancer| PG Node 4| 5432| PostgreSQL backend
+Load Balancer| PG Nodes| 8080| EFM primary health check
+PostgreSQL / EFM| Existing cluster peers| Existing ports| Existing HA/replication
+
+The existing EFM and PostgreSQL replication network should remain unchanged unless required by the implementation.
+
+---
+
+14. Security Considerations
+
+The EFM health-check port should not be exposed to unrestricted networks.
+
+Recommended firewall policy:
+
+Load Balancer → PostgreSQL/EFM :8080   ALLOW
+Other sources → PostgreSQL/EFM :8080   DENY
+
+PostgreSQL port 5432 should similarly be restricted to approved application/load-balancer sources.
+
+The Load Balancer frontend should be accessible only from authorized Qlik infrastructure.
+
+---
+
+15. Why This Architecture
+
+This architecture provides a clean separation of responsibilities.
+
+EFM
+
+Responsible for:
+
+- PostgreSQL HA
+- Primary/standby role
+- Failover
+- Standby promotion
+
+Load Balancer
+
+Responsible for:
+
+- Stable client endpoint
+- Backend connection routing
+- Health-check evaluation
+
+DNS
+
+Responsible for:
+
+- Stable service name
+- Mapping the service FQDN to the Load Balancer frontend
+
+Qlik
+
+Responsible for:
+
+- Connecting to the service FQDN
+- Reconnecting when a database connection is lost
+
+This avoids introducing another database-cluster management layer.
+
+---
+
+16. Why Not a Simple TCP Health Check?
+
+A simple check such as:
+
+TCP 5432 = UP
+
+should not be used as the only primary-selection mechanism.
+
+A PostgreSQL standby may still have port 5432 available.
+
+Therefore:
+
+TCP 5432 UP
+        ≠
+PostgreSQL PRIMARY
+
+Instead:
+
+EFM primary health check
+        |
+        ▼
+HTTP 200
+        |
+        ▼
+PRIMARY
+
+This makes the Load Balancer role-aware.
+
+---
+
+17. Why Not HAProxy or Pgpool-II?
+
+HAProxy and Pgpool-II are not required for the proposed architecture because an enterprise Load Balancer is already available.
+
+The preferred design is:
+
+Qlik
+  ↓
+FQDN
+  ↓
+Enterprise Load Balancer
+  ↓
+PostgreSQL nodes
+  ↓
+EFM 5.4
+
+This minimizes additional infrastructure and operational components.
+
+The Load Balancer handles connection routing while EFM remains responsible for database HA.
+
+---
+
+18. Implementation Approach
+
+Phase 1 – Network Preparation
+
+Confirm:
+
+- Qlik → LB connectivity
+- LB → all PostgreSQL nodes
+- LB → EFM health-check port
+- Firewall rules
+- Routing between subnets
+
+Phase 2 – EFM Configuration
+
+Configure:
+
+primary.health.check.port=8080
+
+on all EFM database nodes.
+
+Validate the endpoint behavior.
+
+Phase 3 – Load Balancer Configuration
+
+Create:
+
+- Frontend listener
+- Backend pool
+- PostgreSQL TCP service
+- EFM HTTP health check
+- Primary-only backend selection
+
+Phase 4 – DNS
+
+Create:
+
+postgres-ha.company.com
+
+and point it to the Load Balancer frontend.
+
+Phase 5 – Qlik
+
+Configure Qlik with:
+
+Host: postgres-ha.company.com
+Port: 5432
+
+No individual PostgreSQL node IP should be required.
+
+Phase 6 – Testing
+
+Execute controlled failover and connection recovery tests.
+
+---
+
+19. Test Scenarios
+
+The following scenarios should be validated before production implementation.
+
+Test 1 – Normal Operation
+
+Expected:
+
+Qlik → FQDN → LB → Current Primary
+
+Test 2 – Planned EFM Switchover
+
+Expected:
+
+Primary changes
+       ↓
+EFM health status changes
+       ↓
+LB identifies new primary
+       ↓
+New connections go to new primary
+
+Test 3 – Unplanned Primary Failure
+
+Expected:
+
+Primary failure
+       ↓
+EFM promotion
+       ↓
+LB detects new primary
+       ↓
+Qlik reconnects
+
+Test 4 – Old Primary Returns
+
+Expected:
+
+Old primary returns
+       ↓
+Node rejoins as standby
+       ↓
+LB does NOT route Qlik traffic to it
+
+Test 5 – Health Check Failure
+
+Expected:
+
+EFM endpoint unavailable
+       ↓
+LB removes node from eligible pool
+
+Test 6 – Qlik Reconnect
+
+Validate:
+
+- Connection retry
+- Job restart behavior
+- Data extraction continuity
+- Error handling
+- Duplicate/incomplete data handling, if applicable
+
+---
+
+20. Monitoring
+
+The following should be monitored:
+
+PostgreSQL
+
+- Database availability
+- Replication status
+- Replication lag
+- Connection count
+- Database errors
+
+EFM
+
+- Cluster status
+- Primary/standby role
+- Failover events
+- Node membership
+- Promotion events
+
+Load Balancer
+
+- Backend health
+- Active backend
+- Health-check failures
+- Connection errors
+- Connection counts
+
+Qlik
+
+- Connection failures
+- Reload failures
+- Job failures
+- Retry/reconnect events
+
+---
+
+21. Operational Ownership
+
+Area| Responsibility
+PostgreSQL HA| DBA / EFM
+Database failover| EFM
+LB configuration| Network / Infrastructure
+DNS| Network / Infrastructure
+Qlik connection| Qlik/Application team
+End-to-end failover testing| DBA + Network + Qlik teams
+Monitoring| Shared Operations
+
+The most important architectural principle is:
+
+EFM owns database role. The Load Balancer owns connection routing. Qlik owns application reconnect behavior.
+
+---
+
+22. Final Architecture
+
+                           ┌─────────────────┐
+                           │      QLIK       │
+                           └────────┬────────┘
+                                    │
+                                    │
+                         postgres-ha.company.com
+                                    │
+                                    ▼
+                         ┌────────────────────┐
+                         │ ENTERPRISE         │
+                         │ LOAD BALANCER      │
+                         │                    │
+                         │ Frontend :5432     │
+                         └─────────┬──────────┘
+                                   │
+             ┌─────────────────────┼─────────────────────┐
+             │                     │                     │
+             ▼                     ▼                     ▼
+       ┌──────────┐          ┌──────────┐          ┌──────────┐
+       │ PG Node1 │          │ PG Node2 │          │ PG Node3 │
+       │ PG16     │          │ PG16     │          │ PG16     │
+       │ EFM 5.4  │          │ EFM 5.4  │          │ EFM 5.4  │
+       └──────────┘          └──────────┘          └──────────┘
+                                                            │
+                                                            ▼
+                                                     ┌──────────┐
+                                                     │ PG Node4 │
+                                                     │ PG16     │
+                                                     │ EFM 5.4  │
+                                                     └──────────┘
+
+                         EFM HEALTH CHECK
+                         TCP/HTTP :8080
+                              │
+                              ▼
+                  200 = PRIMARY / ELIGIBLE
+                  404 = NOT PRIMARY
+
+---
+
+23. Architecture Outcome
+
+The proposed solution achieves the required design objective:
+
+                     ONE QLIK ENDPOINT
+
+                           ↓
+
+                  postgres-ha.company.com
+
+                           ↓
+
+                    Enterprise LB
+
+                           ↓
+
+              Current EFM PRIMARY NODE
+
+During an EFM failover, the database role changes without requiring a change to the Qlik configuration.
+
+The solution therefore provides a stable application-facing endpoint while preserving EFM as the authoritative PostgreSQL HA mechanism.
+
+---
+
+24. Recommendation
+
+Proceed with an Enterprise Load Balancer + FQDN + EFM 5.4 primary health-check architecture.
+
+The recommended production pattern is:
+
+Qlik → FQDN → Enterprise Load Balancer → PostgreSQL 16 nodes
+
+with:
+
+EFM 5.4 → primary health status → Load Balancer → primary-only routing
+
+This design meets the single-endpoint requirement, avoids the need for a cross-subnet PostgreSQL VIP, avoids introducing HAProxy/Pgpool-II, and preserves the existing PostgreSQL/EFM HA architecture.
